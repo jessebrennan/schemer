@@ -1,10 +1,10 @@
 name:                schemer
 version:             0.1.0.0
-github:              "githubuser/schemer"
+github:              jessebrennan/schemer
 license:             BSD3
-author:              "Author name here"
-maintainer:          "example@example.com"
-copyright:           "2018 Author name here"
+author:              Jesse Brennan
+maintainer:          brennan@pacific.net
+copyright:           2018 Jesse Brennan
 
 extra-source-files:
 - README.md
