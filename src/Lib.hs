@@ -13,7 +13,24 @@ data LispVal = Atom String
              | String String
              | Bool Bool
              | Character Char
-             | Float Float
+             {-| Float Float-}
+
+showVal :: LispVal -> String
+showVal (Atom name) = name
+showVal (String contents) = "\"" ++ contents ++ "\""
+showVal (Bool True) = "#t"
+showVal (Bool False) = "#f"
+showVal (Number contents) = show contents
+showVal (Character contents) = "#" ++ show contents
+showVal (List contents) = "(" ++ unwordsList contents ++ ")"
+showVal (DottedList head tail) = "(" ++ unwordsList head ++ " . "
+                          ++ showVal tail ++ ")"
+
+instance Show LispVal where show = showVal
+
+
+unwordsList :: [LispVal] -> String
+unwordsList = unwords . map showVal
 
 symbol :: Parser Char
 symbol = oneOf "!#$%&|*+-/:<=>?@^_~"
@@ -37,34 +54,31 @@ parseAtom = do
 
 -- give a prefix string and a function (like readDec from Numeric)
 -- to make the parser object
-parseNumPrefix :: String -> (String -> [(Integer, String)]) -> Parser LispVal
-parseNumPrefix (hash:letter:_) reader = do
-      char hash
+parseNumPrefix :: Char -> (String -> [(Integer, String)]) -> Parser LispVal
+parseNumPrefix letter reader = do
       char letter
-      num <- many1 digit
+      num <- many1 (digit <|> oneOf "abcdefABCDF")
       let [(val, _)] = reader num
       return . Number $ val
 
 parseDec :: Parser LispVal
-parseDec = ((many1 digit) >>= (return . Number . read))
-   <|> parseNumPrefix "#b" readDec
+parseDec = parseNumPrefix 'd' readDec
+
+parseOct :: Parser LispVal
+parseOct = parseNumPrefix 'o' readOct
+
+parseHex :: Parser LispVal
+parseHex = parseNumPrefix 'x' readHex
+
+parseNumber :: Parser LispVal
+parseNumber = ((many1 digit) >>= (return . Number . read))
+   <|> (char '#' >> (parseDec <|> parseOct <|> parseHex))
 
 -- parseNumber = liftM (Number . read) $ many1 digit
 
 -- parseNumber = do
 --    num <- many1 digit
 --    return (Number . read $ num)
-
-parseOct :: Parser LispVal
-parseOct = parseNumPrefix "#o" readOct
-
-parseHex :: Parser LispVal
-parseHex = parseNumPrefix "#x" readHex
-
-parseNumber :: Parser LispVal
-parseNumber = parseDec
-   <|> parseOct
-   <|> parseHex
 
 parseChar :: Parser LispVal
 parseChar = charPrefix >> ((anyChar >>= (return . Character))
@@ -93,12 +107,12 @@ parseQuoted :: Parser LispVal
 parseQuoted = char '\'' >> parseExpr >>= \x -> return $ List [Atom "quote", x]
 
 parseExpr :: Parser LispVal
-parseExpr = parseAtom
-   <|> parseString
+parseExpr = parseString
    <|> parseNumber
    {-<|> parseFloat-}
    <|> parseChar
    <|> parseQuoted
+   <|> parseAtom
    <|> do char '('
           x <- try parseList <|> parseDottedList
           char ')'
@@ -107,4 +121,4 @@ parseExpr = parseAtom
 readExpr :: String -> String
 readExpr input = case parse parseExpr "lisp" input of
    Left err -> "No match: " ++ show err
-   Right val -> "Found value"
+   Right val -> "Found " ++ show val
