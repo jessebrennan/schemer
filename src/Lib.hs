@@ -30,6 +30,7 @@ data LispError = NumArgs Integer [LispVal]
                | BadSpecialForm String LispVal
                | NotFunction String String
                | UnboundVar String String
+               | UnendedExpr String
                | Default String
 
 showError :: LispError -> String
@@ -41,6 +42,7 @@ showError (NumArgs expected found)      = "Expected " ++ show expected
 showError (TypeMismatch expected found) = "Invalid type: expected " ++ expected
                                        ++ ", found " ++ show found
 showError (Parser parseErr)             = "Parse error at " ++ show parseErr
+showError (UnendedExpr message)         = "No else found; " ++ message
 
 instance Show LispError where show = showError
 
@@ -194,14 +196,20 @@ unpackEquals arg1 arg2 (AnyUnpacker unpacker) =
    `catchError` (const $ return False)
 
 equal :: [LispVal] -> ThrowsError LispVal
+equal [(DottedList xs x), (DottedList ys y)] = equal [List $ xs ++ [x],
+                                                      List $ ys ++ [y]]
+equal [(List arg1), (List arg2)] = return . Bool $ (length arg1 == length arg2)
+                                  && (all equalPair $ zip arg1 arg2)
+   where equalPair (x1, x2) = case equal [x1, x2] of
+                                   Left err -> False
+                                   Right (Bool val) -> val
 equal [arg1, arg2] = do
    primitiveEquals <- liftM or $ mapM (unpackEquals arg1 arg2)
                       [AnyUnpacker unpackNum, AnyUnpacker unpackStr,
                        AnyUnpacker unpackBool]
    eqvEquals <- eqv [arg1, arg2]
    return . Bool $ (primitiveEquals || let (Bool x) = eqvEquals in x)
-equal badArgList = throwError $NumArgs 2 badArgList
-
+equal badArgList = throwError $ NumArgs 2 badArgList
 
 primitives :: [(String, [LispVal] -> ThrowsError LispVal)]
 primitives = [("+", numericBinop (+)),
@@ -244,6 +252,39 @@ apply func args = maybe (throwError $ NotFunction
                         (lookup func primitives)
 
 
+evalTest :: LispVal -> ThrowsError Bool
+evalTest (Atom "else") = return True
+evalTest test = unpackBool =<< eval test
+
+evalCondResult :: Bool -> [LispVal] -> ThrowsError LispVal
+evalCondResult b [] = return $ Bool b
+evalCondResult b xs = liftM last $ mapM eval xs
+
+cond :: [LispVal] -> ThrowsError LispVal
+cond [] = throwError $ UnendedExpr "cond terminated without result"
+cond (List (test:xs) : rest) = do
+   result <- evalTest test
+   if result then evalCondResult result xs
+             else cond rest
+cond (badArg : rest) = throwError $ TypeMismatch "pair" badArg
+
+checkClause :: LispVal -> [LispVal] -> ThrowsError Bool
+checkClause key [] = return False
+checkClause key (x:xs) = do
+   (Bool result) <- eqv [key, x]
+   if result then return True
+             else checkClause key xs
+
+caseEval :: LispVal -> [LispVal] -> ThrowsError LispVal
+caseEval key [] = throwError $ UnendedExpr "case terminated without result"
+caseEval key (List ((List datums):exprs):rest) = do
+   foundMatch <- checkClause key datums
+   if foundMatch then liftM last $ mapM eval exprs
+                 else caseEval key rest
+caseEval key (List (badCheck:exprs):rest) = throwError $ TypeMismatch "case clause"
+                                                                      badCheck
+caseEval key badArgs = throwError $ TypeMismatch "list" $ List badArgs
+
 eval :: LispVal -> ThrowsError LispVal
 eval val@(String _) = return val
 eval val@(Number _) = return val
@@ -254,7 +295,13 @@ eval (List [Atom "if", pred, conseq, alt]) =
    do result <- eval pred
       case result of
          Bool False -> eval alt
-         otherwise  -> eval conseq
+         Bool True  -> eval conseq
+         otherwise  -> throwError $ TypeMismatch "boolean" result
+-- cond
+eval (List ((Atom "cond") : clauses)) = cond clauses
+-- case
+eval (List ((Atom "case") : key : rest)) = do k <- eval key
+                                              caseEval k rest
 -- list
 eval (List [Atom "quote", val]) = return val
 -- dotted list
