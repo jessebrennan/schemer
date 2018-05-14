@@ -1,7 +1,9 @@
 {-# LANGUAGE ExistentialQuantification #-}
 
 module Eval
-    ( eval
+    ( eval,
+      Env,
+      nullEnv
     ) where
 
 import Control.Monad
@@ -16,8 +18,50 @@ import Error
 {- No problem parsing strings, they just have to be entered right
  - sush as :  '(+ 1 \"foo\")' will work in powershell -}
 
+------------------------------------------------------------------------
+-- IORef
+------------------------------------------------------------------------
 
+type Env = IORef [(String, IORef LispVal)]
 
+nullEnv :: IO Env
+nullEnv = newIORef []
+
+isBound :: Env -> String -> IO Bool
+isBound envRef var = readIORef envRef >>= return . maybe False (const True)
+                                                 . lookup var
+
+getVar :: Env -> String -> IOThrowsError LispVal
+getVar envRef var = do
+   env <- liftIO $ readIORef envRef
+   maybe (throwError $ UnboundVar "Getting an unbound variable" var)
+         (liftIO . readIORef)
+         (lookup var env)
+
+setVar :: Env -> String -> LispVal -> IOThrowsError LispVal
+setVar envRef var value = do
+   env <- liftIO $ readIORef envRef
+   maybe (throwError $ UnboundVar "Setting an unbound variable" var)
+         (liftIO . (flip writeIORef value))
+         (lookup var env)
+   return value
+
+defineVar :: Env -> String -> LispVal -> IOThrowsError LispVal
+defineVar envRef var value = do
+   alreadyDefined <- liftIO $ isBound envRef var
+   if alreadyDefined
+      then setVar envRef var value >> return value
+      else liftIO $ do
+         valueRef <- newIORef value
+         env <- readIORef envRef
+         writeIORef envRef ((var, valueRef) : env)
+         return value
+
+bindVars :: Env -> [(String, LispVal)] -> IO Env
+bindVars envRef bindings = readIORef envRef >>= extendEnv bindings >>= newIORef
+   where extendEnv bindings env = liftM (++ env) (mapM addBinding bindings)
+         addBinding (var, value) = do ref <- newIORef value
+                                      return (var, ref)
 ------------------------------------------------------------------------
 -- Evaluating stuff
 ------------------------------------------------------------------------
@@ -248,21 +292,21 @@ apply func args = maybe (throwError $ NotFunction
                         (lookup func primitives)
 
 
-evalTest :: LispVal -> ThrowsError Bool
-evalTest (Atom "else") = return True
-evalTest test = unpackBool =<< eval test
+evalTest :: Env -> LispVal -> IOThrowsError Bool
+evalTest _ (Atom "else") = return True
+evalTest env test = liftThrows . unpackBool =<< eval env test
 
-evalCondResult :: Bool -> [LispVal] -> ThrowsError LispVal
-evalCondResult b [] = return $ Bool b
-evalCondResult b xs = liftM last $ mapM eval xs
+evalCondResult :: Env -> Bool -> [LispVal] -> IOThrowsError LispVal
+evalCondResult _ b [] = return $ Bool b
+evalCondResult env b xs = return . last =<< mapM (eval env) xs
 
-cond :: [LispVal] -> ThrowsError LispVal
-cond [] = throwError $ UnendedExpr "cond terminated without result"
-cond (List (test:xs) : rest) = do
-   result <- evalTest test
-   if result then evalCondResult result xs
-             else cond rest
-cond (badArg : rest) = throwError $ TypeMismatch "pair" badArg
+cond :: Env -> [LispVal] -> IOThrowsError LispVal
+cond _ [] = throwError $ UnendedExpr "cond terminated without result"
+cond env (List (test:xs) : rest) = do
+   result <- evalTest env test
+   if result then evalCondResult env result xs
+             else cond env rest
+cond _ (badArg : rest) = throwError $ TypeMismatch "pair" badArg
 
 checkClause :: LispVal -> [LispVal] -> ThrowsError Bool
 checkClause key [] = return False
@@ -271,37 +315,43 @@ checkClause key (x:xs) = do
    if result then return True
              else checkClause key xs
 
-caseEval :: LispVal -> [LispVal] -> ThrowsError LispVal
-caseEval key [] = throwError $ UnendedExpr "case terminated without result"
-caseEval key (List ((List datums):exprs):rest) = do
-   foundMatch <- checkClause key datums
-   if foundMatch then liftM last $ mapM eval exprs
-                 else caseEval key rest
-caseEval key (List (badCheck:exprs):rest) = throwError $ TypeMismatch "case clause"
-                                                                      badCheck
-caseEval key badArgs = throwError $ TypeMismatch "list" $ List badArgs
+caseEval :: Env -> LispVal -> [LispVal] -> IOThrowsError LispVal
+caseEval _ key [] = throwError $ UnendedExpr "case terminated without result"
+caseEval env key (List ((List datums):exprs):rest) = do
+   foundMatch <- liftThrows $ checkClause key datums
+   if foundMatch then return . last =<< mapM (eval env) exprs
+                 else caseEval env key rest
+caseEval _ key (List (badCheck:exprs):rest) = throwError $ TypeMismatch "case clause"
+                                                                         badCheck
+caseEval _ key badArgs = throwError $ TypeMismatch "list" $ List badArgs
 
 
-eval :: LispVal -> ThrowsError LispVal
-eval val@(String _) = return val
-eval val@(Number _) = return val
-eval val@(Bool _) = return val
-eval val@(Character _) = return val
--- conditionals
-eval (List [Atom "if", pred, conseq, alt]) =
-   do result <- eval pred
+eval :: Env -> LispVal -> IOThrowsError LispVal
+eval env val@(String _) = return val
+eval env val@(Number _) = return val
+eval env val@(Bool _) = return val
+eval env val@(Character _) = return val
+-- variables
+eval env (Atom id) = getVar env id
+eval env (List [Atom "set!", Atom var, form]) =
+     eval env form >>= setVar env var
+eval env (List [Atom "define", Atom var, form]) =
+     eval env form >>= defineVar env var
+ -- conditionals
+eval env (List [Atom "if", pred, conseq, alt]) =
+   do result <- eval env pred
       case result of
-         Bool False -> eval alt
-         Bool True  -> eval conseq
+         Bool False -> eval env alt
+         Bool True  -> eval env conseq
          otherwise  -> throwError $ TypeMismatch "boolean" result
 -- cond
-eval (List ((Atom "cond") : clauses)) = cond clauses
+eval env (List ((Atom "cond") : clauses)) = cond env clauses
 -- case
-eval (List ((Atom "case") : key : rest)) = do k <- eval key
-                                              caseEval k rest
+eval env (List ((Atom "case") : key : rest)) = do k <- eval env key
+                                                  caseEval env k rest
 -- list
-eval (List [Atom "quote", val]) = return val
+eval env (List [Atom "quote", val]) = return val
 -- dotted list
-eval (List (Atom func:args)) =  mapM eval args >>= apply func
-eval badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
+eval env (List (Atom func:args)) =  mapM (eval env) args >>= liftThrows . apply func
+eval env badForm = throwError $ BadSpecialForm "Unrecognized special form" badForm
 
