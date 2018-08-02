@@ -21,7 +21,7 @@ stack build
 
 ## running
 
-_WARNING:_ This project not complete nor fully functional. Running it
+_WARNING:_ This project is only mostly complete. Running it
 may not have to result you expect.
 
 I told stack to call the executable `schemer` so to run it just type
@@ -32,5 +32,16 @@ stack exec schemer
 
 ## code
 
-Most of the code is in [`Lib.hs`](src/Lib.hs) but there is a little bit
-of relevant stuff to be found in [`Main.hs`](app/Main.hs).
+~~Most of the code is in [`Lib.hs`](src/Lib.hs) but there is a little bit
+of relevant stuff to be found in [`Main.hs`](app/Main.hs).~~
+
+I tried to modularize a lot of the code with some success. All of the
+error handling stuff is in [`src/Error.hs`](src/Error.hs). Parsing stuff
+resides in [`src/Parse.hs`](src/Parse.hs). The basic data type for the
+abstract syntax tree is in [`src/AST.hs`](src/AST.hs) along with a helper
+function for which I was to lazy to make a `Util.hs` module. Finally
+[`src/Eval.hs`](src/Eval.hs) contains all of the nitty gritty details for
+evaluating the AST and executing the Scheme.
+
+Also [`app/Main.hs`](app/Main.hs) has all of the IO related code that
+runs the actual interpreter.
